@@ -45,11 +45,13 @@ FullyConnectedLayer::FullyConnectedLayer(int inputs, int outputs)
     bias(outputs) {}
 
 
-TrainingContext::TrainingContext(int batch_size, FullyConnectedLayer& fc1, FullyConnectedLayer& fc2, std::default_random_engine rd)
+TrainingContext::TrainingContext(int batch_size, FullyConnectedLayer& fc1, FullyConnectedLayer& fc2, std::default_random_engine rd, int train_size, int test_size)
     : batch_size(batch_size),
     fc1(fc1),
     fc2(fc2),
-    rd(rd) {
+    rd(rd),
+    train_size(train_size),
+    test_size(test_size) {
         checkCudaErrors(cudaSetDevice(0));
 
         checkCudaErrors(cublasCreate(&cublas_handle));
@@ -64,9 +66,6 @@ TrainingContext::TrainingContext(int batch_size, FullyConnectedLayer& fc1, Fully
         checkCUDNN(cudnnSetTensor4dDescriptor(fc1_tensor, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, batch_size, fc1.outputs, 1, 1));
         checkCUDNN(cudnnSetTensor4dDescriptor(fc2_tensor, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, batch_size, fc2.outputs, 1, 1));
         checkCUDNN(cudnnSetActivationDescriptor(fc1_activation, CUDNN_ACTIVATION_SIGMOID, CUDNN_NOT_PROPAGATE_NAN, 0.0));
-
-        // FIXME Do I need this when I only use feed forward layers?
-        workspace = 0;
     }
 
 TrainingContext::~TrainingContext() {
@@ -115,17 +114,17 @@ void TrainingContext::initialize(int channels, int height, int width) {
     checkCudaErrors(cudaMalloc(&d_onevec, sizeof(float) * batch_size));
 
     // Memory allocation for differentials
-    checkCudaErrors(cudaMalloc(&d_d_fc1, sizeof(float) * batch_size * fc1.inputs));
-    checkCudaErrors(cudaMalloc(&d_d_fc1_post, sizeof(float) * batch_size * fc1.outputs));
-    checkCudaErrors(cudaMalloc(&d_d_fc2, sizeof(float) * batch_size * fc2.inputs));
-    checkCudaErrors(cudaMalloc(&d_d_fc2_post, sizeof(float) * batch_size * fc2.outputs));
+    checkCudaErrors(cudaMalloc(&dd_fc1, sizeof(float) * batch_size * fc1.inputs));
+    checkCudaErrors(cudaMalloc(&dd_fc1_post, sizeof(float) * batch_size * fc1.outputs));
+    checkCudaErrors(cudaMalloc(&dd_fc2, sizeof(float) * batch_size * fc2.inputs));
+    checkCudaErrors(cudaMalloc(&dd_fc2_post, sizeof(float) * batch_size * fc2.outputs));
     checkCudaErrors(cudaMalloc(&d_loss, sizeof(float) * batch_size * fc2.outputs));
 
     // Memory allocation for gradients of network parameters
-    checkCudaErrors(cudaMalloc(&w_g_fc1, sizeof(float) * fc1.neurons.size()));
-    checkCudaErrors(cudaMalloc(&w_g_fc1bias, sizeof(float) * fc1.bias.size()));
-    checkCudaErrors(cudaMalloc(&w_g_fc2, sizeof(float) * fc2.neurons.size()));
-    checkCudaErrors(cudaMalloc(&w_g_fc2bias, sizeof(float) * fc2.bias.size()));
+    checkCudaErrors(cudaMalloc(&dw_fc1, sizeof(float) * fc1.neurons.size()));
+    checkCudaErrors(cudaMalloc(&dw_fc1bias, sizeof(float) * fc1.bias.size()));
+    checkCudaErrors(cudaMalloc(&dw_fc2, sizeof(float) * fc2.neurons.size()));
+    checkCudaErrors(cudaMalloc(&dw_fc2bias, sizeof(float) * fc2.bias.size()));
 
     // Populate GPU global memory
     checkCudaErrors(cudaMemcpyAsync(w_fc1, &fc1.neurons[0], sizeof(float) * fc1.neurons.size(), cudaMemcpyHostToDevice));
@@ -167,29 +166,29 @@ void TrainingContext::backward() {
     checkCudaErrors(cublasSscal(cublas_handle, fc2.outputs * batch_size, &scale_value, d_loss, 1));
 
     // Layer 2
-    // Derivative w.r.t. weights w_g_fc2 = (d_fc1_post * d_fc2_post)
-    checkCudaErrors(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T, fc2.inputs, fc2.outputs, batch_size, &alpha, d_fc1_post, fc2.inputs, d_loss, fc2.outputs, &beta, w_g_fc2, fc2.inputs));
-    // Derivative w.r.t. bias w_g_fc2bias = d_loss * 1_vec
-    checkCudaErrors(cublasSgemv(cublas_handle, CUBLAS_OP_N, fc2.outputs, batch_size, &alpha, d_loss, fc2.outputs, d_onevec, 1, &beta, w_g_fc2bias, 1));
+    // Derivative w.r.t. weights dw_fc2 = (d_fc1_post * d_fc2_post)
+    checkCudaErrors(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T, fc2.inputs, fc2.outputs, batch_size, &alpha, d_fc1_post, fc2.inputs, d_loss, fc2.outputs, &beta, dw_fc2, fc2.inputs));
+    // Derivative w.r.t. bias dw_fc2bias = d_loss * 1_vec
+    checkCudaErrors(cublasSgemv(cublas_handle, CUBLAS_OP_N, fc2.outputs, batch_size, &alpha, d_loss, fc2.outputs, d_onevec, 1, &beta, dw_fc2bias, 1));
     // Derivative w.r.t. data d_fc2_pre * d_fc2_post
-    checkCudaErrors(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, fc2.inputs, batch_size, fc2.outputs, &alpha, w_fc2, fc2.inputs, d_loss, fc2.outputs, &beta, d_d_fc2, fc2.inputs));
-    checkCUDNN(cudnnActivationBackward(cudnn_handle, fc1_activation, &alpha, fc1_tensor, d_fc1_post, fc1_tensor, d_d_fc2, fc1_tensor, d_fc1_pre, &beta, fc1_tensor, d_d_fc1_post));
+    checkCudaErrors(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, fc2.inputs, batch_size, fc2.outputs, &alpha, w_fc2, fc2.inputs, d_loss, fc2.outputs, &beta, dd_fc2, fc2.inputs));
+    checkCUDNN(cudnnActivationBackward(cudnn_handle, fc1_activation, &alpha, fc1_tensor, d_fc1_post, fc1_tensor, dd_fc2, fc1_tensor, d_fc1_pre, &beta, fc1_tensor, dd_fc1_post));
 
     // Layer 1
     // Derivative w.r.t. weights d_g_fc1 = d_data * d_fc1_post)
-    checkCudaErrors(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T, fc1.inputs, fc1.outputs, batch_size, &alpha, d_data, fc1.inputs, d_d_fc1_post, fc1.outputs, &beta, w_g_fc1, fc1.inputs));
-    // Derivative w.r.t. bias w_g_fc1bias = d_fc1_post * 1_vec
-    checkCudaErrors(cublasSgemv(cublas_handle, CUBLAS_OP_N, fc1.outputs, batch_size, &alpha, d_d_fc1_post, fc1.outputs, d_onevec, 1, &beta, w_g_fc1bias, 1));
+    checkCudaErrors(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T, fc1.inputs, fc1.outputs, batch_size, &alpha, d_data, fc1.inputs, dd_fc1_post, fc1.outputs, &beta, dw_fc1, fc1.inputs));
+    // Derivative w.r.t. bias dw_fc1bias = d_fc1_post * 1_vec
+    checkCudaErrors(cublasSgemv(cublas_handle, CUBLAS_OP_N, fc1.outputs, batch_size, &alpha, dd_fc1_post, fc1.outputs, d_onevec, 1, &beta, dw_fc1bias, 1));
 }
 
 void TrainingContext::update(float learning_rate) {
     float alpha = -learning_rate;
 
-    checkCudaErrors(cublasSaxpy(cublas_handle, static_cast<int>(fc1.neurons.size()), &alpha, w_g_fc1, 1, w_fc1, 1));
-    checkCudaErrors(cublasSaxpy(cublas_handle, static_cast<int>(fc1.bias.size()), &alpha, w_g_fc1bias, 1, w_fc1bias, 1));
+    checkCudaErrors(cublasSaxpy(cublas_handle, static_cast<int>(fc1.neurons.size()), &alpha, dw_fc1, 1, w_fc1, 1));
+    checkCudaErrors(cublasSaxpy(cublas_handle, static_cast<int>(fc1.bias.size()), &alpha, dw_fc1bias, 1, w_fc1bias, 1));
 
-    checkCudaErrors(cublasSaxpy(cublas_handle, static_cast<int>(fc2.neurons.size()), &alpha, w_g_fc2, 1, w_fc2, 1));
-    checkCudaErrors(cublasSaxpy(cublas_handle, static_cast<int>(fc2.bias.size()), &alpha, w_g_fc2bias, 1, w_fc2bias, 1));
+    checkCudaErrors(cublasSaxpy(cublas_handle, static_cast<int>(fc2.neurons.size()), &alpha, dw_fc2, 1, w_fc2, 1));
+    checkCudaErrors(cublasSaxpy(cublas_handle, static_cast<int>(fc2.bias.size()), &alpha, dw_fc2bias, 1, w_fc2bias, 1));
 }
 
 void TrainingContext::train(int iter) {
@@ -217,7 +216,6 @@ void TrainingContext::train(int iter) {
 }
 
 void TrainingContext::test() {
-        // Deliberately only looking at the first result
     checkCudaErrors(cudaDeviceSynchronize());
 
     int num_errors = 0;
@@ -266,14 +264,14 @@ void TrainingContext::destroy() {
 
     checkCudaErrors(cudaFree(d_onevec));
 
-    checkCudaErrors(cudaFree(d_d_fc1));
-    checkCudaErrors(cudaFree(d_d_fc1_post));
-    checkCudaErrors(cudaFree(d_d_fc2));
-    checkCudaErrors(cudaFree(d_d_fc2_post));
+    checkCudaErrors(cudaFree(dd_fc1));
+    checkCudaErrors(cudaFree(dd_fc1_post));
+    checkCudaErrors(cudaFree(dd_fc2));
+    checkCudaErrors(cudaFree(dd_fc2_post));
     checkCudaErrors(cudaFree(d_loss));
 
-    checkCudaErrors(cudaFree(w_g_fc1));
-    checkCudaErrors(cudaFree(w_g_fc1bias));
-    checkCudaErrors(cudaFree(w_g_fc2));
-    checkCudaErrors(cudaFree(w_g_fc2bias));
+    checkCudaErrors(cudaFree(dw_fc1));
+    checkCudaErrors(cudaFree(dw_fc1bias));
+    checkCudaErrors(cudaFree(dw_fc2));
+    checkCudaErrors(cudaFree(dw_fc2bias));
 }
