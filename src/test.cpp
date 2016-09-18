@@ -11,7 +11,8 @@
 
 DEFINE_int32(iterations, 1000, "Number of iterations for training");
 DEFINE_int32(random_seed, -1, "Override random seed (default uses std::random_device)");
-DEFINE_int32(batch_size, 641, "Mini-batch size");
+DEFINE_int32(batch_size, 64, "Mini-batch size");
+DEFINE_int32(n_hidden_nodes, 500, "Mini-batch size");
 
 DEFINE_string(train_images, "../data/train-images-idx3-ubyte", "Training images filename");
 DEFINE_string(train_labels, "../data/train-labels-idx1-ubyte", "Training labels filename");
@@ -59,14 +60,16 @@ int main(int argc, char **argv) {
     std::default_random_engine rdengine(FLAGS_random_seed < -1 ? r() : FLAGS_random_seed);
 
     // Set up FFN
-    int n_hidden_nodes = 500;
+    int n_hidden_nodes = FLAGS_n_hidden_nodes;
     FullyConnectedLayer fc1(width * height, n_hidden_nodes);
-    FullyConnectedLayer fc2(fc1.outputs, 10);
+    FullyConnectedLayer fc2(fc1.outputs, n_hidden_nodes);
+    FullyConnectedLayer fc3(fc2.outputs, n_hidden_nodes);
+    FullyConnectedLayer fc4(fc3.outputs, 10);
 
     int batch_size = FLAGS_batch_size;
 
     // Setup training context
-    TrainingContext context(batch_size, fc1, fc2, rdengine, train_size, test_size);
+    TrainingContext context(batch_size, fc1, fc2, fc3, fc4, rdengine, train_size, test_size);
 
     std::cout << "Weight initialization" << std::endl;
 
