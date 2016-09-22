@@ -9,7 +9,7 @@
 #include "readubyte.h"
 #include "ffn.h"
 
-DEFINE_int32(iterations, 1000, "Number of iterations for training");
+DEFINE_int32(epoch, 1000, "Number of epochs for training");
 DEFINE_int32(random_seed, -1, "Override random seed (default uses std::random_device)");
 DEFINE_int32(batch_size, 64, "Mini-batch size");
 DEFINE_int32(n_hidden_nodes, 500, "Mini-batch size");
@@ -107,10 +107,10 @@ int main(int argc, char **argv) {
 
     std::cout << "Train" << std::endl;
     auto t1 = std::chrono::high_resolution_clock::now();
-    context.train(FLAGS_iterations);
+    context.train(FLAGS_epoch);
     auto t2 = std::chrono::high_resolution_clock::now();
 
-    printf("Iteration time: %f ms\n", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0f / FLAGS_iterations);
+    printf("\nEpoch time: %f ms\n", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0f / FLAGS_epoch);
     printf("Total time: %f min\n", std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0f / 1000.0f / 60.0f);
 
     std::cout << "Test" << std::endl;

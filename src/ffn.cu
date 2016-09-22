@@ -272,9 +272,9 @@ void TrainingContext::update(float learning_rate) {
     checkCudaErrors(cublasSaxpy(cublas_handle, static_cast<int>(fc4.bias.size()), &alpha, dw_fc4bias, 1, w_fc4bias, 1));
 }
 
-void TrainingContext::train(int iter) {
+void TrainingContext::train(int epoch) {
     checkCudaErrors(cudaDeviceSynchronize());
-    for (int i = 0; i < iter; ++i) {
+    for (int i = 0; i * batch_size < epoch * train_size; ++i) {
         int imageid = i % (train_size / batch_size);
 
         // Copy current batch to GPU
@@ -288,7 +288,7 @@ void TrainingContext::train(int iter) {
         float learning_rate = static_cast<float>(0.01 * pow((1.0 + 0.0001 * i), (-0.75)));
         update(learning_rate);
 
-        if (i % 1000 == 0) {
+        if (i % (train_size / batch_size) == 0) {
             std::cout << ".";
             fflush(stdout);
         }

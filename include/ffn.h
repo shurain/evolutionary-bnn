@@ -68,7 +68,7 @@ class TrainingContext {
         void initialize(int channels, int height, int width);
         void destroy();
 
-        void train(int iter);
+        void train(int epoch);
         void test();
 
         void forward();
